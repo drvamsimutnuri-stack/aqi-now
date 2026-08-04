@@ -70,13 +70,24 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function fetchJson<T>(
   url: URL,
   label: string,
-  { revalidate, attempts = 3, headers }: { revalidate: number; attempts?: number; headers?: Record<string, string> },
+  {
+    revalidate,
+    attempts = 3,
+    headers,
+    timeoutMs = 9000,
+  }: { revalidate: number; attempts?: number; headers?: Record<string, string>; timeoutMs?: number },
 ): Promise<T> {
   let lastError: Error = new Error(`${label} failed`);
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const res = await fetch(url, { next: { revalidate }, headers });
+      // Without a deadline an overloaded upstream can hang until the platform
+      // kills the whole render. Retrying a slow request beats waiting on it.
+      const res = await fetch(url, {
+        next: { revalidate },
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
 
       if (res.ok) return (await res.json()) as T;
 
@@ -122,30 +133,102 @@ const RANKING_FIELDS = [
 ] as const;
 
 /**
- * Fetch many locations in one request. Open-Meteo accepts comma-separated
- * coordinates and returns an array in the same order, which keeps the city
- * ranking to a single upstream call.
+ * Locations per upstream request.
+ *
+ * Open-Meteo prices a call by locations × variables × hours, so asking for all
+ * 57 cities at once was expensive enough to be rate-limited (HTTP 429) and, when
+ * it was accepted, slow enough to hang. Measured: 1 location ~0.9s, 4 ~1.1s,
+ * 12 ~2.4s, 57 either times out or is refused. Twelve keeps each request cheap
+ * and quick while needing only a handful of them.
+ */
+const BATCH_CHUNK = 12;
+
+/**
+ * Chunks in flight at once. The rate limit counts locations over time, not
+ * connections, so running the handful of chunks together costs the same as
+ * staggering them and keeps a cold render inside a serverless timeout.
+ */
+const BATCH_CONCURRENCY = 6;
+
+/**
+ * Must match the detail pages' window. Trimming this to 24 looked like free
+ * savings, but it shifted which hours fall into the 24-hour trailing mean and
+ * made Delhi read 129 here against 114 on its own page. The EU index was
+ * unaffected, which is the tell: only the averaged indices moved. Chunking is
+ * what solved the rate limiting, so this can stay aligned.
+ */
+const RANKING_PAST_HOURS = PAST_HOURS;
+
+/**
+ * Fetch many locations, in chunks.
+ *
+ * Chunks that fail yield empty responses rather than rejecting, so one refused
+ * chunk costs a few rows of the ranking instead of the whole page. Order is
+ * preserved so callers can zip the results back against their input.
  */
 export async function fetchAirQualityBatch(
   points: { latitude: number; longitude: number }[],
 ): Promise<AirQualityResponse[]> {
   if (points.length === 0) return [];
 
+  const chunks: { latitude: number; longitude: number }[][] = [];
+  for (let i = 0; i < points.length; i += BATCH_CHUNK) {
+    chunks.push(points.slice(i, i + BATCH_CHUNK));
+  }
+
+  const results: AirQualityResponse[][] = new Array(chunks.length).fill(null);
+  let next = 0;
+
+  async function worker() {
+    while (next < chunks.length) {
+      const index = next++;
+      results[index] = await fetchChunk(chunks[index]);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(BATCH_CONCURRENCY, chunks.length) }, worker),
+  );
+
+  return results.flat();
+}
+
+async function fetchChunk(
+  points: { latitude: number; longitude: number }[],
+): Promise<AirQualityResponse[]> {
   const url = new URL(AIR_QUALITY_URL);
   url.searchParams.set("latitude", points.map((p) => p.latitude.toFixed(4)).join(","));
   url.searchParams.set("longitude", points.map((p) => p.longitude.toFixed(4)).join(","));
   url.searchParams.set("hourly", RANKING_FIELDS.join(","));
   url.searchParams.set("current", "us_aqi,european_aqi");
-  url.searchParams.set("past_hours", String(PAST_HOURS));
-  url.searchParams.set("forecast_days", "1");
+  url.searchParams.set("past_hours", String(RANKING_PAST_HOURS));
+  // forecast_days is ignored once past_hours is set — it was quietly returning
+  // 216 hours per city, four times what the ranking reads. forecast_hours is
+  // honoured, and ending at the current hour is all a leaderboard needs.
+  url.searchParams.set("forecast_hours", "1");
   url.searchParams.set("timezone", "auto");
 
-  const data = await fetchJson<AirQualityResponse | AirQualityResponse[]>(
-    url,
-    "Open-Meteo batch request",
-    { revalidate: 900 },
-  );
-  return Array.isArray(data) ? data : [data];
+  try {
+    const data = await fetchJson<AirQualityResponse | AirQualityResponse[]>(
+      url,
+      "Open-Meteo batch request",
+      // An hour is ample for a leaderboard, and it cuts upstream load fourfold
+      // against the 15 minutes this used to use.
+      { revalidate: 3600, attempts: 2, timeoutMs: 8000 },
+    );
+    const list = Array.isArray(data) ? data : [data];
+    // Guard against a short response silently shifting every later city.
+    return list.length === points.length ? list : padTo(list, points.length);
+  } catch {
+    return padTo([], points.length);
+  }
+}
+
+/** Placeholders keep positions aligned when a chunk fails or comes up short. */
+function padTo(list: AirQualityResponse[], length: number): AirQualityResponse[] {
+  const padded = list.slice(0, length);
+  while (padded.length < length) padded.push({} as AirQualityResponse);
+  return padded;
 }
 
 export async function searchPlaces(query: string, count = 8): Promise<Place[]> {
