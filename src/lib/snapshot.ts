@@ -1,6 +1,7 @@
 import { cigaretteEquivalent, computeIndex, trailingMean, type Series, type SubIndex } from "./aqi";
 import { MEASURE_ORDER, MEASURES, POLLEN_ORDER, type MeasureKey, type PollenKey } from "./pollutants";
 import { fetchAirQuality, reverseGeocode, type AirQualityResponse } from "./openmeteo";
+import { fetchStationSnapshot, type StationReading, type StationSnapshot } from "./openaq";
 import { STANDARD_ORDER, type PollutantKey, type StandardId } from "./standards";
 
 /** Serialisable form of an index result; the Standard itself is a shared constant. */
@@ -9,6 +10,29 @@ export interface IndexPayload {
   index: number | null;
   dominant: PollutantKey | null;
   subIndices: SubIndex[];
+}
+
+/**
+ * A pollutant as actually measured at a ground station, kept alongside the
+ * modelled value rather than replacing it.
+ *
+ * Deliberately not substituted into the index: the AQI needs 24-hour means, and
+ * the `latest` endpoint gives only the newest hour, so swapping one hour of
+ * measured data into a modelled average would produce a number belonging to
+ * neither source. Showing both, and the gap between them, is more useful and
+ * more honest than a silent blend.
+ */
+export interface MeasuredValue {
+  /** Normalised to µg/m³ to match the modelled value. */
+  value: number;
+  rawValue: number;
+  rawUnit: string;
+  stationName: string;
+  provider: string | null;
+  distanceKm: number | null;
+  ageMinutes: number;
+  /** How far the model sits from the measurement, as a percentage of it. */
+  deltaPct: number | null;
 }
 
 export interface MeasureReading {
@@ -21,6 +45,8 @@ export interface MeasureReading {
   /** How many times the WHO 24-hour guideline the 24-hour mean is. */
   whoRatio: number | null;
   unit: string;
+  /** Null when no station nearby reports this pollutant, which is common. */
+  measured: MeasuredValue | null;
 }
 
 export interface PollenReading {
@@ -43,10 +69,36 @@ export interface SnapshotLocation {
   name: string;
   region: string | null;
   country: string | null;
+  /** The coordinates actually asked for — the user's position or the city centre. */
   latitude: number;
   longitude: number;
+  /**
+   * Centre of the CAMS grid cell the reading came from. The model resolution is
+   * roughly 11 km, so this can sit a couple of kilometres away; showing it
+   * separately keeps the displayed position honest without looking like the
+   * app lost track of where you are.
+   */
+  gridLatitude: number;
+  gridLongitude: number;
+  gridDistanceKm: number;
   elevation: number;
   timezone: string;
+}
+
+/** Great-circle distance in kilometres. */
+export function haversineKm(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number,
+): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(a));
 }
 
 export interface Snapshot {
@@ -62,6 +114,8 @@ export interface Snapshot {
   /** Open-Meteo's own index values, kept as a cross-check. */
   provider: { usAqi: number | null; europeanAqi: number | null };
   cigarettesPerDay: number | null;
+  /** Reference monitors that contributed a reading, nearest first. */
+  stations: StationSnapshot["stations"] | null;
   fetchedAt: string;
 }
 
@@ -118,10 +172,16 @@ export async function buildSnapshot(
   longitude: number,
   knownName?: { name: string; region?: string | null; country?: string | null },
 ): Promise<Snapshot> {
-  const [res, place] = await Promise.all([
+  const [res, place, stationData] = await Promise.all([
     fetchAirQuality(latitude, longitude),
     knownName ? Promise.resolve(null) : reverseGeocode(latitude, longitude),
+    // Supplementary: a failure here costs provenance detail, never the page.
+    fetchStationSnapshot(latitude, longitude).catch(() => null),
   ]);
+
+  const measuredByKey = new Map<MeasureKey, StationReading>(
+    (stationData?.readings ?? []).map((r) => [r.measure, r]),
+  );
 
   const now = findNowIndex(res);
   const currentSeries = seriesAt(res, now);
@@ -138,6 +198,8 @@ export async function buildSnapshot(
     const yesterday = values?.[now - 24] ?? null;
 
     const who24h = MEASURES[key].who.find((g) => g.label === "24-hour");
+    const station = measuredByKey.get(key);
+
     return {
       key,
       value,
@@ -148,6 +210,21 @@ export async function buildSnapshot(
           : null,
       whoRatio: who24h && mean24h !== null ? mean24h / who24h.value : null,
       unit: MEASURES[key].unit,
+      measured: station
+        ? {
+            value: station.value,
+            rawValue: station.rawValue,
+            rawUnit: station.rawUnit,
+            stationName: station.stationName,
+            provider: station.provider,
+            distanceKm: station.distanceKm,
+            ageMinutes: station.ageMinutes,
+            deltaPct:
+              value !== null && station.value > 0
+                ? ((value - station.value) / station.value) * 100
+                : null,
+          }
+        : null,
     };
   });
 
@@ -184,11 +261,14 @@ export async function buildSnapshot(
 
   return {
     location: {
-      name: knownName?.name ?? place?.name ?? `${latitude.toFixed(2)}, ${longitude.toFixed(2)}`,
+      name: knownName?.name ?? place?.name ?? `${latitude.toFixed(3)}, ${longitude.toFixed(3)}`,
       region: knownName?.region ?? place?.region ?? null,
       country: knownName?.country ?? place?.country ?? null,
-      latitude: res.latitude,
-      longitude: res.longitude,
+      latitude,
+      longitude,
+      gridLatitude: res.latitude,
+      gridLongitude: res.longitude,
+      gridDistanceKm: haversineKm(latitude, longitude, res.latitude, res.longitude),
       elevation: res.elevation,
       timezone: res.timezone,
     },
@@ -203,6 +283,7 @@ export async function buildSnapshot(
       europeanAqi: res.current?.european_aqi ?? null,
     },
     cigarettesPerDay: pm25Mean !== null ? cigaretteEquivalent(pm25Mean) : null,
+    stations: stationData?.stations ?? null,
     fetchedAt: new Date().toISOString(),
   };
 }

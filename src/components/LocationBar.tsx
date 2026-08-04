@@ -85,29 +85,51 @@ export function LocationBar({ currentLabel }: { currentLabel: string }) {
     }
     setBusy("locate");
     setError(null);
-    navigator.geolocation.getCurrentPosition(
-      async ({ coords }) => {
-        const lat = coords.latitude.toFixed(4);
-        const lon = coords.longitude.toFixed(4);
-        try {
-          const res = await fetch(`/api/geocode?lat=${lat}&lon=${lon}`);
-          const data = await res.json();
-          go({ lat, lon, name: data.place?.name, region: data.place?.region, country: data.place?.country });
-        } catch {
-          go({ lat, lon });
-        } finally {
-          setBusy(null);
-        }
-      },
-      (err) => {
+
+    async function applyCoords(coords: GeolocationCoordinates) {
+      const lat = coords.latitude.toFixed(4);
+      const lon = coords.longitude.toFixed(4);
+      try {
+        const res = await fetch(`/api/geocode?lat=${lat}&lon=${lon}`);
+        const data = await res.json();
+        go({ lat, lon, name: data.place?.name, region: data.place?.region, country: data.place?.country });
+      } catch {
+        go({ lat, lon });
+      } finally {
         setBusy(null);
-        setError(
-          err.code === err.PERMISSION_DENIED
-            ? "Location permission denied. Search for your city instead."
-            : "Could not get your location. Search for your city instead.",
+      }
+    }
+
+    function fail(err: GeolocationPositionError) {
+      setBusy(null);
+      if (err.code === err.PERMISSION_DENIED) {
+        setError("Location permission denied. Search for your city instead.");
+      } else if (err.code === err.TIMEOUT) {
+        setError("Locating timed out. Try again, or search for your city.");
+      } else {
+        setError("Could not get your location. Search for your city instead.");
+      }
+    }
+
+    // Ask for a genuine GPS/wifi fix rather than accepting a cached, coarse
+    // one: maximumAge 0 forbids a stale reading, and high accuracy is what
+    // distinguishes your street from your city.
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => applyCoords(coords),
+      (highAccuracyError) => {
+        // Indoors or on desktop a high-accuracy fix can simply be unavailable,
+        // so fall back to a coarse position rather than failing outright.
+        if (highAccuracyError.code === highAccuracyError.PERMISSION_DENIED) {
+          fail(highAccuracyError);
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(
+          ({ coords }) => applyCoords(coords),
+          fail,
+          { enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 },
         );
       },
-      { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
     );
   }
 
@@ -133,6 +155,14 @@ export function LocationBar({ currentLabel }: { currentLabel: string }) {
             type="search"
             // The browser's own autofill dropdown would cover our results list.
             autoComplete="off"
+            /*
+             * This input always renders empty on both server and client, so any
+             * mismatch here originates outside React: Chrome restores search
+             * field values on reload, password managers and extensions inject
+             * attributes. Suppressing is scoped to this one element and cannot
+             * mask a genuine mismatch in our own markup.
+             */
+            suppressHydrationWarning
             className="w-full rounded-xl border border-ink-600/70 bg-ink-900/80 py-3 pl-10 pr-3 text-sm text-mist-100 placeholder:text-mist-400/80 focus:border-sky-400/70 focus:outline-none"
           />
           {busy === "search" && (

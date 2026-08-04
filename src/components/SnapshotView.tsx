@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { HealthPanel } from "./HealthPanel";
+import { HealthSection } from "./health/HealthSection";
 import { IndexPanel } from "./IndexPanel";
+import { StationPanel } from "./StationPanel";
 import { LocationBar } from "./LocationBar";
 import { PollenPanel } from "./PollenPanel";
 import { PollutantGrid } from "./PollutantGrid";
@@ -24,8 +25,6 @@ const featured = FEATURED_SLUGS.map((slug) => CITIES.find((c) => c.slug === slug
 );
 
 export function SnapshotView({ snapshot }: { snapshot: Snapshot }) {
-  const usAqi = snapshot.indices.us.index;
-  const uv = snapshot.measures.find((m) => m.key === "uv_index")?.value ?? null;
   const label = placeLine(snapshot.location);
 
   return (
@@ -36,7 +35,7 @@ export function SnapshotView({ snapshot }: { snapshot: Snapshot }) {
         <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{label}</h1>
         <p className="tnum mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-mist-400">
           <span>
-            {snapshot.location.latitude.toFixed(3)}°, {snapshot.location.longitude.toFixed(3)}°
+            {snapshot.location.latitude.toFixed(4)}°, {snapshot.location.longitude.toFixed(4)}°
           </span>
           <span aria-hidden>·</span>
           <span>{Math.round(snapshot.location.elevation)} m elevation</span>
@@ -45,7 +44,14 @@ export function SnapshotView({ snapshot }: { snapshot: Snapshot }) {
             Hour of {formatLocalHour(snapshot.observedAt)} {snapshot.timezoneAbbreviation}
           </span>
           <span aria-hidden>·</span>
-          <span>Updated hourly from CAMS</span>
+          <span
+            title={`Model grid cell centre: ${snapshot.location.gridLatitude.toFixed(3)}°, ${snapshot.location.gridLongitude.toFixed(3)}°`}
+          >
+            Nearest CAMS cell {snapshot.location.gridDistanceKm < 1
+              ? "under 1 km"
+              : `${snapshot.location.gridDistanceKm.toFixed(1)} km`}{" "}
+            away
+          </span>
         </p>
       </header>
 
@@ -102,12 +108,9 @@ export function SnapshotView({ snapshot }: { snapshot: Snapshot }) {
         )}
       </section>
 
-      <HealthPanel
-        usAqi={usAqi}
-        dominant={snapshot.indices.us.dominant ?? snapshot.indices.in.dominant}
-        cigarettesPerDay={snapshot.cigarettesPerDay}
-        uvIndex={uv}
-      />
+      <StationPanel snapshot={snapshot} />
+
+      <HealthSection snapshot={snapshot} />
 
       <TrendChart trend={snapshot.trend} />
 

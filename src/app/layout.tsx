@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
-import { SITE_NAME, SITE_URL } from "@/lib/site";
+import { BRAND_NAME, BRAND_URL, SITE_NAME, SITE_URL } from "@/lib/site";
 import "./globals.css";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
@@ -25,6 +25,9 @@ export const metadata: Metadata = {
     "air pollution health effects",
     "live air quality",
   ],
+  authors: [{ name: BRAND_NAME, ...(BRAND_URL ? { url: BRAND_URL } : {}) }],
+  creator: BRAND_NAME,
+  publisher: BRAND_NAME,
   openGraph: {
     title: "AQI Now — live air quality index and health effects",
     description:
@@ -59,8 +62,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
               >
                 A
               </span>
-              <span className="text-base font-semibold tracking-tight">
-                AQI<span className="text-sky-400">Now</span>
+              <span className="flex flex-col leading-none">
+                <span className="text-base font-semibold tracking-tight">
+                  AQI<span className="text-sky-400">Now</span>
+                </span>
+                <span className="mt-0.5 text-[10px] font-medium tracking-wide text-mist-400">
+                  by {BRAND_NAME}
+                </span>
               </span>
             </Link>
             <nav className="flex items-center gap-1 text-sm text-mist-300">
@@ -112,6 +120,22 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <p className="text-mist-400/80">
               Health information is general guidance drawn from EPA AirNow and WHO Air Quality
               Guidelines. It is not medical advice — talk to a clinician about your own situation.
+            </p>
+            <p className="border-t border-ink-800/70 pt-3 text-mist-400/80">
+              {SITE_NAME} — built and maintained by{" "}
+              {BRAND_URL ? (
+                <a
+                  href={BRAND_URL}
+                  className="font-semibold text-mist-200 underline-offset-2 hover:underline"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {BRAND_NAME}
+                </a>
+              ) : (
+                <span className="font-semibold text-mist-200">{BRAND_NAME}</span>
+              )}
+              .
             </p>
           </div>
         </footer>

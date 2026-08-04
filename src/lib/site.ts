@@ -13,3 +13,11 @@ export const SITE_URL = (
 ).replace(/\/$/, "");
 
 export const SITE_NAME = "AQI Now";
+
+/**
+ * Publisher branding. Change these two values and every place it appears in the
+ * UI and metadata follows — header, footer and page titles — so rebranding later
+ * is a one-line edit rather than a search across components.
+ */
+export const BRAND_NAME = "Vamsipedia";
+export const BRAND_URL: string | null = null;

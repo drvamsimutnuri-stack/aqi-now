@@ -57,10 +57,15 @@ The breakpoint tables, category bands and full method are also rendered for read
 | Pollutant concentrations, pollen, UV | [Open-Meteo Air Quality API](https://open-meteo.com/en/docs/air-quality-api), serving Copernicus CAMS |
 | City search | Open-Meteo Geocoding |
 | Reverse geocoding | OpenStreetMap Nominatim |
+| Ground-station readings (optional) | [OpenAQ v3](https://docs.openaq.org/) — official reference monitors (CPCB, AirNow, EEA) |
 
-No API keys required. CAMS is a global model at roughly 11 km resolution, not a street-corner sensor —
-readings are a well-informed estimate for an area, and a nearby reference monitor should win where one
-exists.
+CAMS is a global model at roughly 11 km resolution, not a street-corner sensor, so its readings are a
+well-informed estimate for an area. Where OpenAQ has a reference monitor nearby, the app shows what was
+actually measured next to what the model predicted, and names the station and its distance.
+
+The headline AQI stays model-derived even when station data is present. The index needs 24-hour averages
+while OpenAQ's `latest` endpoint returns single hours, so substituting one into the other would produce a
+number belonging to neither source.
 
 ## Getting started
 
@@ -68,8 +73,19 @@ Requires Node.js 20 or newer.
 
 ```bash
 npm install
-npm run dev          # http://localhost:3000
+npm run dev          # http://localhost:3001
 ```
+
+Everything works without any API key; the station comparison simply stays hidden. To enable it, register
+for a free key at [openaq.org](https://openaq.org/register) and add it to `.env.local`:
+
+```bash
+OPENAQ_API_KEY=your_key_here
+```
+
+OpenAQ v3 requires a key — the older keyless v1 and v2 endpoints are retired and return `410 Gone`. The
+client fails soft in every direction: no key, a rejected key, a timeout or no nearby station all fall back
+to model-only rather than degrading the page.
 
 ```bash
 npm test             # AQI engine tests against published EPA/EAQI/CPCB reference values

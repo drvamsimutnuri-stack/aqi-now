@@ -58,6 +58,43 @@ export interface Place {
 export const PAST_HOURS = 48;
 export const FORECAST_DAYS = 3;
 
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Fetch JSON with retries and backoff.
+ *
+ * A single transient upstream hiccup used to blank the whole page, because a
+ * thrown fetch takes the server component down with it. Client errors are not
+ * retried — a 400 will still be a 400 — but 5xx, 429 and network faults are.
+ */
+async function fetchJson<T>(
+  url: URL,
+  label: string,
+  { revalidate, attempts = 3, headers }: { revalidate: number; attempts?: number; headers?: Record<string, string> },
+): Promise<T> {
+  let lastError: Error = new Error(`${label} failed`);
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const res = await fetch(url, { next: { revalidate }, headers });
+
+      if (res.ok) return (await res.json()) as T;
+
+      const retryable = res.status >= 500 || res.status === 429;
+      lastError = new Error(`${label} failed (HTTP ${res.status})`);
+      if (!retryable) throw lastError;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      // A non-retryable HTTP status was rethrown above; stop immediately.
+      if (/HTTP 4\d\d/.test(lastError.message)) throw lastError;
+    }
+
+    if (attempt < attempts) await delay(250 * 2 ** (attempt - 1));
+  }
+
+  throw lastError;
+}
+
 export async function fetchAirQuality(lat: number, lon: number): Promise<AirQualityResponse> {
   const url = new URL(AIR_QUALITY_URL);
   url.searchParams.set("latitude", lat.toFixed(4));
@@ -68,11 +105,9 @@ export async function fetchAirQuality(lat: number, lon: number): Promise<AirQual
   url.searchParams.set("forecast_days", String(FORECAST_DAYS));
   url.searchParams.set("timezone", "auto");
 
-  const res = await fetch(url, { next: { revalidate: 600 } });
-  if (!res.ok) {
-    throw new Error(`Open-Meteo air quality request failed (${res.status})`);
-  }
-  return res.json();
+  return fetchJson<AirQualityResponse>(url, "Open-Meteo air quality request", {
+    revalidate: 600,
+  });
 }
 
 /** Pollutant fields needed to score an index, without the chart extras. */
@@ -105,10 +140,11 @@ export async function fetchAirQualityBatch(
   url.searchParams.set("forecast_days", "1");
   url.searchParams.set("timezone", "auto");
 
-  const res = await fetch(url, { next: { revalidate: 900 } });
-  if (!res.ok) throw new Error(`Open-Meteo batch request failed (${res.status})`);
-
-  const data = await res.json();
+  const data = await fetchJson<AirQualityResponse | AirQualityResponse[]>(
+    url,
+    "Open-Meteo batch request",
+    { revalidate: 900 },
+  );
   return Array.isArray(data) ? data : [data];
 }
 
@@ -122,10 +158,11 @@ export async function searchPlaces(query: string, count = 8): Promise<Place[]> {
   url.searchParams.set("language", "en");
   url.searchParams.set("format", "json");
 
-  const res = await fetch(url, { next: { revalidate: 86400 } });
-  if (!res.ok) throw new Error(`Geocoding request failed (${res.status})`);
-
-  const data = await res.json();
+  const data = await fetchJson<{ results?: Record<string, unknown>[] }>(
+    url,
+    "Geocoding request",
+    { revalidate: 86400 },
+  );
   const results: Record<string, unknown>[] = data.results ?? [];
   return results.map((r) => ({
     id: Number(r.id),
@@ -142,13 +179,33 @@ export async function searchPlaces(query: string, count = 8): Promise<Place[]> {
 }
 
 /**
+ * How long a page will wait for a place name before giving up and showing
+ * coordinates. Nominatim's own connect timeout is 10 seconds, which is far too
+ * long to stall a render for a cosmetic label.
+ */
+const REVERSE_BUDGET_MS = 2500;
+const REVERSE_BREAKER_MS = 5 * 60_000;
+
+/**
+ * Set when a lookup fails, so an unreachable Nominatim costs one slow request
+ * rather than one per visitor. Cheap circuit breaker: process-local and
+ * time-based, which is all this needs — the fallback is merely a coordinate
+ * label, so failing open again after a few minutes is harmless.
+ */
+let reverseUnavailableUntil = 0;
+
+/**
  * Turn coordinates into a place name. Nominatim asks that callers identify
  * themselves and cache aggressively, hence the User-Agent and long revalidate.
+ *
+ * Always fails soft: the caller falls back to showing coordinates, so no
+ * failure here should ever be visible as anything worse than a missing name.
  */
 export async function reverseGeocode(
   lat: number,
   lon: number,
 ): Promise<{ name: string; region: string | null; country: string | null } | null> {
+  if (Date.now() < reverseUnavailableUntil) return null;
   const url = new URL(REVERSE_URL);
   url.searchParams.set("format", "jsonv2");
   url.searchParams.set("lat", lat.toFixed(4));
@@ -160,8 +217,15 @@ export async function reverseGeocode(
     const res = await fetch(url, {
       headers: { "User-Agent": "aqi-now/0.1 (open-source air quality viewer)" },
       next: { revalidate: 86400 },
+      signal: AbortSignal.timeout(REVERSE_BUDGET_MS),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // Being rate-limited or refused is a reason to back off, not to retry.
+      if (res.status === 429 || res.status >= 500) {
+        reverseUnavailableUntil = Date.now() + REVERSE_BREAKER_MS;
+      }
+      return null;
+    }
 
     const data = await res.json();
     const a = data.address ?? {};
@@ -175,6 +239,8 @@ export async function reverseGeocode(
       country: a.country ?? null,
     };
   } catch {
+    // Timed out or unreachable; stop asking for a while.
+    reverseUnavailableUntil = Date.now() + REVERSE_BREAKER_MS;
     return null;
   }
 }
