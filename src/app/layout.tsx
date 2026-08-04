@@ -1,12 +1,14 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
+import { SITE_NAME, SITE_URL } from "@/lib/site";
 import "./globals.css";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: {
     default: "AQI Now — live air quality index and health effects",
     template: "%s | AQI Now",
@@ -28,6 +30,14 @@ export const metadata: Metadata = {
     description:
       "Instant AQI on three international standards, every pollutant broken out, and what each one does to your body.",
     type: "website",
+    siteName: SITE_NAME,
+    url: SITE_URL,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "AQI Now — live air quality index and health effects",
+    description:
+      "Instant AQI on three international standards, every pollutant broken out, and what each one does to your body.",
   },
 };
 
