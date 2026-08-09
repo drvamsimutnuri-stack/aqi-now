@@ -11,12 +11,34 @@ import { CITIES, FEATURED_SLUGS } from "@/lib/cities";
 import { categoryFor, STANDARDS, STANDARD_ORDER, type StandardId } from "@/lib/standards";
 import type { Snapshot } from "@/lib/snapshot";
 
+/**
+ * Rough bounds of the Indian subcontinent.
+ *
+ * Only consulted when we never learned the country: a reverse lookup that timed
+ * out, or a location shared as bare coordinates. Showing someone standing in
+ * Delhi the US index is a worse error than occasionally defaulting a
+ * neighbouring country to CPCB, and the tab is switchable either way.
+ */
+function looksIndian(latitude: number, longitude: number): boolean {
+  return latitude >= 6.5 && latitude <= 35.5 && longitude >= 68 && longitude <= 97.5;
+}
+
 /** Pick the standard a visitor at this location is most likely to recognise. */
 function defaultStandard(snapshot: Snapshot): StandardId {
-  if (snapshot.location.country === "India") return "in";
+  const { country, countryCode, latitude, longitude } = snapshot.location;
+
+  // The code is the reliable signal; the name depends on what language the
+  // geocoder felt like answering in.
+  if (countryCode === "IN" || country === "India") return "in";
+
   // Pollen is only modelled inside the CAMS Europe domain, so its presence
   // is a reliable signal that we are in Europe.
   if (snapshot.pollen) return "eu";
+
+  // Passing a place name without a country skips the reverse lookup entirely,
+  // which is how an Indian city ended up scored on the US index.
+  if (!country && !countryCode && looksIndian(latitude, longitude)) return "in";
+
   return "us";
 }
 

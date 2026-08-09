@@ -287,7 +287,13 @@ let reverseUnavailableUntil = 0;
 export async function reverseGeocode(
   lat: number,
   lon: number,
-): Promise<{ name: string; region: string | null; country: string | null } | null> {
+): Promise<{
+  name: string;
+  region: string | null;
+  country: string | null;
+  /** ISO 3166-1 alpha-2, upper-cased. Independent of what language the name came back in. */
+  countryCode: string | null;
+} | null> {
   if (Date.now() < reverseUnavailableUntil) return null;
   const url = new URL(REVERSE_URL);
   url.searchParams.set("format", "jsonv2");
@@ -298,7 +304,13 @@ export async function reverseGeocode(
 
   try {
     const res = await fetch(url, {
-      headers: { "User-Agent": "aqi-now/0.1 (open-source air quality viewer)" },
+      headers: {
+        "User-Agent": "aqi-now/0.1 (open-source air quality viewer)",
+        // Nominatim answers in the location's own language unless asked
+        // otherwise, so without this a place in India can come back as
+        // "भारत" — which then fails every comparison we make against it.
+        "Accept-Language": "en",
+      },
       next: { revalidate: 86400 },
       signal: AbortSignal.timeout(REVERSE_BUDGET_MS),
     });
@@ -320,6 +332,7 @@ export async function reverseGeocode(
       name: String(name),
       region: a.state ?? a.state_district ?? null,
       country: a.country ?? null,
+      countryCode: a.country_code ? String(a.country_code).toUpperCase() : null,
     };
   } catch {
     // Timed out or unreachable; stop asking for a while.

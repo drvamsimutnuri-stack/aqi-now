@@ -37,6 +37,7 @@ export default async function Home({ searchParams }: PageProps<"/">) {
         name: coerce(params.name),
         region: coerce(params.region) ?? null,
         country: coerce(params.country) ?? null,
+        countryCode: coerce(params.cc) ?? null,
       }
     : {
         latitude: DEFAULT_CITY.latitude,
@@ -44,6 +45,7 @@ export default async function Home({ searchParams }: PageProps<"/">) {
         name: DEFAULT_CITY.name,
         region: DEFAULT_CITY.region ?? null,
         country: DEFAULT_CITY.country,
+        countryCode: null,
       };
 
   // Resolve the data first; JSX is built outside the try so that render-time
@@ -53,7 +55,14 @@ export default async function Home({ searchParams }: PageProps<"/">) {
     snapshot = await buildSnapshot(
       target.latitude,
       target.longitude,
-      target.name ? { name: target.name, region: target.region, country: target.country } : undefined,
+      target.name
+        ? {
+            name: target.name,
+            region: target.region,
+            country: target.country,
+            countryCode: target.countryCode,
+          }
+        : undefined,
     );
   } catch (error) {
     return <DataError message={error instanceof Error ? error.message : "Unknown error"} />;

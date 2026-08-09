@@ -8,6 +8,30 @@ function describe(place: Place): string {
   return [place.name, place.admin1, place.country].filter(Boolean).join(", ");
 }
 
+/**
+ * Prefer a precise fix, but accept one the device worked out in the last
+ * minute.
+ *
+ * Forbidding cached readings entirely (maximumAge 0) forces a cold GPS or wifi
+ * lock every time, which a laptop indoors frequently cannot deliver — the
+ * request then sits there until it times out. A minute-old fix is still the
+ * right street.
+ */
+const PRECISE: PositionOptions = { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 };
+
+/** Last resort: any fix, however coarse or stale, beats no location at all. */
+const COARSE: PositionOptions = { enableHighAccuracy: false, timeout: 8000, maximumAge: 300_000 };
+
+function getPosition(options: PositionOptions): Promise<GeolocationCoordinates> {
+  return new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(
+      (position) => resolve(position.coords),
+      reject,
+      options,
+    );
+  });
+}
+
 export function LocationBar({ currentLabel }: { currentLabel: string }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
@@ -65,7 +89,15 @@ export function LocationBar({ currentLabel }: { currentLabel: string }) {
     }
     setOpen(false);
     setQuery("");
-    router.push(`/?${search.toString()}`);
+
+    const href = `/?${search.toString()}`;
+    router.push(href);
+    // Coordinates are rounded to four decimals, so locating yourself twice from
+    // the same room produces the identical URL and the router does nothing —
+    // which reads as the page ignoring you. Refresh to re-fetch regardless.
+    if (href === `${window.location.pathname}${window.location.search}`) {
+      router.refresh();
+    }
   }
 
   function selectPlace(place: Place) {
@@ -75,12 +107,19 @@ export function LocationBar({ currentLabel }: { currentLabel: string }) {
       name: place.name,
       region: place.admin1,
       country: place.country,
+      cc: place.countryCode,
     });
   }
 
   function locateMe() {
     if (!navigator.geolocation) {
       setError("This browser does not support location access.");
+      return;
+    }
+    // Browsers refuse geolocation outside a secure context, and they do it
+    // silently enough to look like a timeout.
+    if (!window.isSecureContext) {
+      setError("Location needs a secure (https) connection. Search for your city instead.");
       return;
     }
     setBusy("locate");
@@ -92,7 +131,14 @@ export function LocationBar({ currentLabel }: { currentLabel: string }) {
       try {
         const res = await fetch(`/api/geocode?lat=${lat}&lon=${lon}`);
         const data = await res.json();
-        go({ lat, lon, name: data.place?.name, region: data.place?.region, country: data.place?.country });
+        go({
+          lat,
+          lon,
+          name: data.place?.name,
+          region: data.place?.region,
+          country: data.place?.country,
+          cc: data.place?.countryCode,
+        });
       } catch {
         go({ lat, lon });
       } finally {
@@ -103,34 +149,32 @@ export function LocationBar({ currentLabel }: { currentLabel: string }) {
     function fail(err: GeolocationPositionError) {
       setBusy(null);
       if (err.code === err.PERMISSION_DENIED) {
-        setError("Location permission denied. Search for your city instead.");
+        setError("Location permission denied. Allow it for this site in your browser, or search for your city.");
       } else if (err.code === err.TIMEOUT) {
-        setError("Locating timed out. Try again, or search for your city.");
+        setError(
+          "Locating timed out. On a laptop this usually means location services are turned off for your browser in system settings. Searching for your city works just as well.",
+        );
       } else {
-        setError("Could not get your location. Search for your city instead.");
+        setError(
+          "Your device could not work out where it is. On macOS check System Settings › Privacy & Security › Location Services, or just search for your city.",
+        );
       }
     }
 
-    // Ask for a genuine GPS/wifi fix rather than accepting a cached, coarse
-    // one: maximumAge 0 forbids a stale reading, and high accuracy is what
-    // distinguishes your street from your city.
-    navigator.geolocation.getCurrentPosition(
-      ({ coords }) => applyCoords(coords),
-      (highAccuracyError) => {
-        // Indoors or on desktop a high-accuracy fix can simply be unavailable,
-        // so fall back to a coarse position rather than failing outright.
-        if (highAccuracyError.code === highAccuracyError.PERMISSION_DENIED) {
-          fail(highAccuracyError);
-          return;
-        }
-        navigator.geolocation.getCurrentPosition(
-          ({ coords }) => applyCoords(coords),
-          fail,
-          { enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 },
-        );
-      },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
-    );
+    // Fired straight from the tap, with nothing awaited first. Mobile browsers
+    // tie the permission prompt to that user gesture, and anything awaited
+    // beforehand risks the prompt never appearing. A denied permission already
+    // fails instantly, so there is nothing to gain by checking up front.
+    getPosition(PRECISE)
+      .catch((err: GeolocationPositionError) => {
+        // A laptop indoors, or a phone that cannot see the sky, often has no
+        // precise fix available. Asking again without that constraint usually
+        // succeeds straight away.
+        if (err.code === err.PERMISSION_DENIED) throw err;
+        return getPosition(COARSE);
+      })
+      .then(applyCoords)
+      .catch(fail);
   }
 
   return (

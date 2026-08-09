@@ -187,7 +187,9 @@ describe("batched city requests", () => {
 describe("reverseGeocode never blocks a page", () => {
   it("returns a name when the lookup succeeds", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ address: { city: "Hyderabad", state: "Telangana", country: "India" } }),
+      jsonResponse({
+        address: { city: "Hyderabad", state: "Telangana", country: "India", country_code: "in" },
+      }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -195,7 +197,28 @@ describe("reverseGeocode never blocks a page", () => {
       name: "Hyderabad",
       region: "Telangana",
       country: "India",
+      countryCode: "IN",
     });
+  });
+
+  it("asks for English, so the country name can be compared against", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ address: { city: "Pune" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await reverseGeocode(18.52, 73.85);
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Record<string, string>)["Accept-Language"]).toBe("en");
+  });
+
+  it("still reports a country code when the name comes back localised", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ address: { city: "दिल्ली", country: "भारत", country_code: "in" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const place = await reverseGeocode(28.61, 77.21);
+    // The name may be in any script; the code is what we key decisions off.
+    expect(place?.countryCode).toBe("IN");
   });
 
   it("caps how long it waits, rather than inheriting a 10s connect timeout", async () => {

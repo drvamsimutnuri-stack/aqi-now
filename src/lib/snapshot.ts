@@ -69,6 +69,8 @@ export interface SnapshotLocation {
   name: string;
   region: string | null;
   country: string | null;
+  /** ISO 3166-1 alpha-2. Survives translation, unlike the country name. */
+  countryCode: string | null;
   /** The coordinates actually asked for — the user's position or the city centre. */
   latitude: number;
   longitude: number;
@@ -170,7 +172,12 @@ function toPayload(standardId: StandardId, series: Series): IndexPayload {
 export async function buildSnapshot(
   latitude: number,
   longitude: number,
-  knownName?: { name: string; region?: string | null; country?: string | null },
+  knownName?: {
+    name: string;
+    region?: string | null;
+    country?: string | null;
+    countryCode?: string | null;
+  },
 ): Promise<Snapshot> {
   const [res, place, stationData] = await Promise.all([
     fetchAirQuality(latitude, longitude),
@@ -264,6 +271,7 @@ export async function buildSnapshot(
       name: knownName?.name ?? place?.name ?? `${latitude.toFixed(3)}, ${longitude.toFixed(3)}`,
       region: knownName?.region ?? place?.region ?? null,
       country: knownName?.country ?? place?.country ?? null,
+      countryCode: knownName?.countryCode ?? place?.countryCode ?? null,
       latitude,
       longitude,
       gridLatitude: res.latitude,
