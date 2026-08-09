@@ -9,18 +9,25 @@ function describe(place: Place): string {
 }
 
 /**
- * Prefer a precise fix, but accept one the device worked out in the last
- * minute.
+ * Network / wifi location first.
  *
- * Forbidding cached readings entirely (maximumAge 0) forces a cold GPS or wifi
- * lock every time, which a laptop indoors frequently cannot deliver — the
- * request then sits there until it times out. A minute-old fix is still the
- * right street.
+ * The air-quality model is on an ~11 km grid, so a coarse fix is more than
+ * enough — and on a phone indoors it is usually the only one that arrives
+ * before the timeout. Asking for GPS first (enableHighAccuracy) is what made
+ * "Use my location" hang and then fail on mobile.
  */
-const PRECISE: PositionOptions = { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 };
+const COARSE: PositionOptions = {
+  enableHighAccuracy: false,
+  timeout: 15_000,
+  maximumAge: 300_000,
+};
 
-/** Last resort: any fix, however coarse or stale, beats no location at all. */
-const COARSE: PositionOptions = { enableHighAccuracy: false, timeout: 8000, maximumAge: 300_000 };
+/** Only if the coarse request itself fails — longer budget for a cold GPS lock. */
+const PRECISE: PositionOptions = {
+  enableHighAccuracy: true,
+  timeout: 20_000,
+  maximumAge: 60_000,
+};
 
 function getPosition(options: PositionOptions): Promise<GeolocationCoordinates> {
   return new Promise((resolve, reject) => {
@@ -30,6 +37,11 @@ function getPosition(options: PositionOptions): Promise<GeolocationCoordinates> 
       options,
     );
   });
+}
+
+function isMobileClient(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 }
 
 export function LocationBar({ currentLabel }: { currentLabel: string }) {
@@ -129,7 +141,11 @@ export function LocationBar({ currentLabel }: { currentLabel: string }) {
       const lat = coords.latitude.toFixed(4);
       const lon = coords.longitude.toFixed(4);
       try {
-        const res = await fetch(`/api/geocode?lat=${lat}&lon=${lon}`);
+        // Cap the reverse lookup so a slow geocoder cannot leave the button
+        // stuck on "Locating…" after GPS already succeeded.
+        const res = await fetch(`/api/geocode?lat=${lat}&lon=${lon}`, {
+          signal: AbortSignal.timeout(4000),
+        });
         const data = await res.json();
         go({
           lat,
@@ -148,30 +164,35 @@ export function LocationBar({ currentLabel }: { currentLabel: string }) {
 
     function fail(err: GeolocationPositionError) {
       setBusy(null);
+      const mobile = isMobileClient();
       if (err.code === err.PERMISSION_DENIED) {
-        setError("Location permission denied. Allow it for this site in your browser, or search for your city.");
+        setError(
+          mobile
+            ? "Location is blocked for this site. On iPhone: Settings → Safari → Location. On Android: the lock icon in the address bar → Permissions. Or search for your city."
+            : "Location permission denied. Allow it for this site in your browser, or search for your city.",
+        );
       } else if (err.code === err.TIMEOUT) {
         setError(
-          "Locating timed out. On a laptop this usually means location services are turned off for your browser in system settings. Searching for your city works just as well.",
+          mobile
+            ? "Locating timed out. Turn on Location Services for your browser, step outdoors for a moment, then try again — or just search for your city."
+            : "Locating timed out. Check that Location Services are on for your browser, or search for your city.",
         );
       } else {
         setError(
-          "Your device could not work out where it is. On macOS check System Settings › Privacy & Security › Location Services, or just search for your city.",
+          mobile
+            ? "Your phone could not work out where it is. Check that Location Services are on, then try again — or search for your city."
+            : "Your device could not work out where it is. Check Location Services, or search for your city.",
         );
       }
     }
 
-    // Fired straight from the tap, with nothing awaited first. Mobile browsers
-    // tie the permission prompt to that user gesture, and anything awaited
-    // beforehand risks the prompt never appearing. A denied permission already
-    // fails instantly, so there is nothing to gain by checking up front.
-    getPosition(PRECISE)
+    // Fired straight from the tap — mobile browsers tie the permission prompt
+    // to that gesture. Coarse first: fast indoors, accurate enough for AQI.
+    // Precise only as a fallback if the network fix itself fails.
+    getPosition(COARSE)
       .catch((err: GeolocationPositionError) => {
-        // A laptop indoors, or a phone that cannot see the sky, often has no
-        // precise fix available. Asking again without that constraint usually
-        // succeeds straight away.
         if (err.code === err.PERMISSION_DENIED) throw err;
-        return getPosition(COARSE);
+        return getPosition(PRECISE);
       })
       .then(applyCoords)
       .catch(fail);
@@ -237,9 +258,10 @@ export function LocationBar({ currentLabel }: { currentLabel: string }) {
         </div>
 
         <button
+          type="button"
           onClick={locateMe}
           disabled={busy === "locate"}
-          className="flex items-center justify-center gap-2 rounded-xl border border-sky-400/40 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-300 transition hover:bg-sky-400/20 disabled:opacity-60"
+          className="flex w-full items-center justify-center gap-2 rounded-xl border border-sky-400/40 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-300 transition hover:bg-sky-400/20 active:bg-sky-400/25 disabled:opacity-60 sm:w-auto"
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
             <circle cx="12" cy="12" r="3.2" />
